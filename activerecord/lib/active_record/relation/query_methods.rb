@@ -35,7 +35,8 @@ module ActiveRecord
       #    User.where.not(name: "Jon", role: "admin")
       #    # SELECT * FROM users WHERE name != 'Jon' AND role != 'admin'
       def not(opts, *rest)
-        where_value = @scope.send(:build_where, opts, rest).map do |rel|
+        where_value, _ = @scope.send(:build_where, opts, rest)
+        where_value.map! do |rel|
           case rel
           when Arel::Nodes::In
             Arel::Nodes::NotIn.new(rel.left, rel.right)
@@ -540,7 +541,10 @@ module ActiveRecord
       else
         references!(PredicateBuilder.references(opts)) if Hash === opts
 
-        self.where_values += build_where(opts, rest)
+        where_values, bind_values = build_where(opts, rest)
+
+        self.bind_values += bind_values
+        self.where_values += where_values
         self
       end
     end
@@ -556,7 +560,8 @@ module ActiveRecord
     def having!(opts, *rest) # :nodoc:
       references!(PredicateBuilder.references(opts)) if Hash === opts
 
-      self.having_values += build_where(opts, rest)
+      where_value, _ = build_where(opts, rest)
+      self.having_values += where_value
       self
     end
 
@@ -887,18 +892,42 @@ module ActiveRecord
     def build_where(opts, other = [])
       case opts
       when String, Array
-        [@klass.send(:sanitize_sql, other.empty? ? opts : ([opts] + other))]
+        values = Hash === other.first ? other.first.values : other
+
+        bind_values = build_bind_values(values)
+        where_values = [@klass.send(:sanitize_sql, other.empty? ? opts : ([opts] + other))]
+
+        [where_values, bind_values]
       when Hash
         attributes = @klass.send(:expand_hash_conditions_for_aggregates, opts)
 
-        attributes.values.grep(ActiveRecord::Relation) do |rel|
-          self.bind_values += rel.bind_values
-        end
+        bind_values = build_bind_values(attributes.values)
+        where_values = PredicateBuilder.build_from_hash(klass, attributes, table)
 
-        PredicateBuilder.build_from_hash(klass, attributes, table)
+        [where_values, reindex_bind_values(bind_values, where_values)]
       else
-        [opts]
+        [[opts], []]
       end
+    end
+
+    def build_bind_values(values)
+      values.grep(ActiveRecord::Relation).inject([]) { |a, rel| a + rel.bind_values }
+    end
+
+    def reindex_bind_values(bind_values, where_values, bv_base = self.bind_values.size)
+      if bind_values.present?
+        bv_index = 0
+        where_values.grep(Arel::Nodes::Node).each do |node|
+          node.each do |n|
+            if Arel::Nodes::Equality === n && Arel::Nodes::BindParam === n.right
+              n.right = connection.substitute_at(bind_values[bv_index].first, bv_base + bv_index)
+              bv_index += 1
+            end
+          end
+        end
+      end
+
+      bind_values
     end
 
     def build_from
