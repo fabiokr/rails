@@ -1,3 +1,26 @@
+*   For PG queries with bind values in base query and in sub-queries generates bad indexes for bind params
+    of prepared constraints in sub-queries. Added re-indexing of bind params on build where values
+    for sub-queries.
+
+    Fixes #12753.
+
+    Example:
+
+        posts.comments.to_sql
+        # => SELECT "comments".* FROM "comments" WHERE "comments"."post_id" = $1
+
+        posts.comments.where(id: posts.comments).to_sql
+        # Before:
+        # => SELECT "comments".* FROM "comments" WHERE "comments"."post_id" = $1 AND
+        #    "comments"."id" IN
+        #    (SELECT "comments"."id" FROM "comments"  WHERE "comments"."post_id" = $1)
+        # After:
+        # => SELECT "comments".* FROM "comments" WHERE "comments"."post_id" = $1 AND
+        #    "comments"."id" IN
+        #    (SELECT "comments"."id" FROM "comments"  WHERE "comments"."post_id" = $2)
+
+    *Paul Nikitochkin*
+
 *   Add flag to disable schema dump after migration.
 
     Add a config parameter on Active Record named `dump_schema_after_migration`
